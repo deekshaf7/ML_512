@@ -12,6 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 import os 
 import shutil
 import torchvision
+import torch
 from convert_ckpt import add_additional_channels
 import math
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -20,6 +21,9 @@ from distributed import get_rank, synchronize, get_world_size
 from transformers import get_cosine_schedule_with_warmup, get_constant_schedule_with_warmup
 from copy import deepcopy
 from inpaint_mask_func import draw_masks_from_boxes
+import torch.nn.functional as F
+import time
+
 from ldm.modules.attention import BasicTransformerBlock
 try:
     from apex import amp
@@ -30,34 +34,46 @@ except:
 
 
 class ImageCaptionSaver:
-    def __init__(self, base_path, nrow=8, normalize=True, scale_each=True, range=(-1,1) ):
-        self.base_path = base_path 
+    def __init__(self, base_path, nrow=8, normalize=True, scale_each=False):
+        self.base_path = base_path
         self.nrow = nrow
         self.normalize = normalize
         self.scale_each = scale_each
-        self.range = range
+
+    def normalize_images(self, images, min_val=-1, max_val=1):
+        # Normalize images to a specific range, here assumed to be [-1, 1] for example.
+        # This method assumes images are initially in [0, 1].
+        return images * (max_val - min_val) + min_val
 
     def __call__(self, images, real, masked_real, captions, seen):
-        
-        save_path = os.path.join(self.base_path, str(seen).zfill(8)+'.png')
-        torchvision.utils.save_image( images, save_path, nrow=self.nrow, normalize=self.normalize, scale_each=self.scale_each, range=self.range )
-        
-        save_path = os.path.join(self.base_path, str(seen).zfill(8)+'_real.png')
-        torchvision.utils.save_image( real, save_path, nrow=self.nrow)
+        # If normalization is needed beyond [0, 1], manually adjust the range here
+        if self.normalize and not self.scale_each:
+            images = self.normalize_images(images)
+            real = self.normalize_images(real)
+            if masked_real is not None:
+                masked_real = self.normalize_images(masked_real)
 
+        # Save processed images
+        save_path = os.path.join(self.base_path, str(seen).zfill(8) + '.png')
+        torchvision.utils.save_image(images, save_path, nrow=self.nrow, normalize=self.normalize, scale_each=self.scale_each)
+        
+        # Save real images
+        save_path = os.path.join(self.base_path, str(seen).zfill(8) + '_real.png')
+        torchvision.utils.save_image(real, save_path, nrow=self.nrow, normalize=self.normalize, scale_each=self.scale_each)
+
+        # Save masked real images if applicable
         if masked_real is not None:
-            # only inpaiting mode case 
-            save_path = os.path.join(self.base_path, str(seen).zfill(8)+'_mased_real.png')
-            torchvision.utils.save_image( masked_real, save_path, nrow=self.nrow, normalize=self.normalize, scale_each=self.scale_each, range=self.range)
+            save_path = os.path.join(self.base_path, str(seen).zfill(8) + '_masked_real.png')
+            torchvision.utils.save_image(masked_real, save_path, nrow=self.nrow, normalize=self.normalize, scale_each=self.scale_each)
 
-        assert images.shape[0] == len(captions)
-
+        # Save captions
+        assert images.shape[0] == len(captions), "The number of images must match the number of captions"
         save_path = os.path.join(self.base_path, 'captions.txt')
         with open(save_path, "a") as f:
-            f.write( str(seen).zfill(8) + ':\n' )    
+            f.write(str(seen).zfill(8) + ':\n')
             for cap in captions:
-                f.write( cap + '\n' )  
-            f.write( '\n' ) 
+                f.write(cap + '\n')
+            f.write('\n')
 
 
 
@@ -122,9 +138,9 @@ def update_ema(target_params, source_params, rate=0.99):
     for targ, src in zip(target_params, source_params):
         targ.detach().mul_(rate).add_(src, alpha=1 - rate)
 
-           
 def create_expt_folder_with_auto_resuming(OUTPUT_ROOT, name):
-    name = os.path.join( OUTPUT_ROOT, name )
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    name = os.path.join(OUTPUT_ROOT, f"{name}_{timestamp}")
     writer = None
     checkpoint = None
 
@@ -152,16 +168,37 @@ def create_expt_folder_with_auto_resuming(OUTPUT_ROOT, name):
 
     return name, writer, checkpoint
 
+# def create_expt_folder_with_auto_resuming(OUTPUT_ROOT, name):
+#     name = os.path.join( OUTPUT_ROOT, name )
+#     writer = None
+#     checkpoint = None
 
+#     if os.path.exists(name):
+#         all_tags = os.listdir(name)
+#         all_existing_tags = [ tag for tag in all_tags if tag.startswith('tag')    ]
+#         all_existing_tags.sort()
+#         all_existing_tags = all_existing_tags[::-1]
+#         for previous_tag in all_existing_tags:
+#             potential_ckpt = os.path.join( name, previous_tag, 'checkpoint_latest.pth' )
+#             if os.path.exists(potential_ckpt):
+#                 checkpoint = potential_ckpt
+#                 if get_rank() == 0:
+#                     print('auto-resuming ckpt found '+ potential_ckpt)
+#                 break 
+#         curr_tag = 'tag'+str(len(all_existing_tags)).zfill(2)
+#         name = os.path.join( name, curr_tag ) # output/name/tagxx
+#     else:
+#         name = os.path.join( name, 'tag00' ) # output/name/tag00
 
+#     if get_rank() == 0:
+#         os.makedirs(name) 
+#         os.makedirs(  os.path.join(name,'Log')  ) 
+#         writer = SummaryWriter( os.path.join(name,'Log')  )
+
+#     return name, writer, checkpoint
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = # 
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = # 
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = # 
-
-
-
-
-
 
 class Trainer:
     def __init__(self, config):
@@ -170,6 +207,7 @@ class Trainer:
         self.device = torch.device("cuda")
 
         self.l_simple_weight = 1
+        self.l_char_aware_weight = 0.1
         self.name, self.writer, checkpoint = create_expt_folder_with_auto_resuming(config.OUTPUT_ROOT, config.name)
         if get_rank() == 0:
             shutil.copyfile(config.yaml_file, os.path.join(self.name, "train_config_file.yaml")  )
@@ -198,9 +236,9 @@ class Trainer:
         assert unexpected_keys == []
         original_params_names = list( state_dict["model"].keys()  ) # used for sanity check later 
         
-        self.autoencoder.load_state_dict( state_dict["autoencoder"]  )
-        self.text_encoder.load_state_dict( state_dict["text_encoder"]  )
-        self.diffusion.load_state_dict( state_dict["diffusion"]  )
+        self.autoencoder.load_state_dict( state_dict["autoencoder"]  ,strict = False)
+        self.text_encoder.load_state_dict( state_dict["text_encoder"] , strict = False )
+        self.diffusion.load_state_dict( state_dict["diffusion"]  ,strict = False)
  
         self.autoencoder.eval()
         self.text_encoder.eval()
@@ -350,6 +388,34 @@ class Trainer:
         return z, t, context, inpainting_extra_input, grounding_extra_input 
 
 
+    # def run_one_step(self, batch):
+    #     x_start, t, context, inpainting_extra_input, grounding_extra_input = self.get_input(batch)
+    #     noise = torch.randn_like(x_start)
+    #     x_noisy = self.diffusion.q_sample(x_start=x_start, t=t, noise=noise)
+
+    #     grounding_input = self.grounding_tokenizer_input.prepare(batch)
+    #     input = dict(x=x_noisy, 
+    #                 timesteps=t, 
+    #                 context=context, 
+    #                 inpainting_extra_input=inpainting_extra_input,
+    #                 grounding_extra_input=grounding_extra_input,
+    #                 grounding_input=grounding_input)
+    #     model_output = self.model(input)
+        
+    #     loss = torch.nn.functional.mse_loss(model_output, noise) * self.l_simple_weight
+
+    #     self.loss_dict = {"loss": loss.item()}
+
+    #     return loss 
+        
+    def dice_loss(self, input, target):
+        smooth = 1e-6
+        input_flat = input.view(-1)
+        target_flat = target.view(-1)
+        intersection = torch.sum(input_flat * target_flat)
+        dice_coeff = (2. * intersection + smooth) / (torch.sum(input_flat) + torch.sum(target_flat) + smooth)
+        return 1. - dice_coeff
+
     def run_one_step(self, batch):
         x_start, t, context, inpainting_extra_input, grounding_extra_input = self.get_input(batch)
         noise = torch.randn_like(x_start)
@@ -363,14 +429,14 @@ class Trainer:
                     grounding_extra_input=grounding_extra_input,
                     grounding_input=grounding_input)
         model_output = self.model(input)
-        
-        loss = torch.nn.functional.mse_loss(model_output, noise) * self.l_simple_weight
+
+        mse_loss = F.mse_loss(model_output, noise) * self.l_simple_weight
+        dice_loss_value = self.dice_loss(model_output, noise) * self.l_char_aware_weight
+        loss = mse_loss + dice_loss_value
 
         self.loss_dict = {"loss": loss.item()}
 
-        return loss 
-        
-
+        return loss
 
     def start_training(self):
 
