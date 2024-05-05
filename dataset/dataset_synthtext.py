@@ -78,18 +78,14 @@ def get_bb(mat_contents, index):
                     result_image[i].append([mat_contents['wordBB'][0][index][0][j][i], mat_contents['wordBB'][0][index][1][j][i]])
 
 
-        final_indicies = []
         final_indicies_actual = []
         for i in range(c):
             x0,x1,x2,x3  = result_image[i]
             actual_width, actual_height = np.abs((x0[0] - x1[0])), np.abs(x0[1] - x3[1])
-            width, height = x2[0], x0[1]
 
-            x3_ = np.append(x3,np.array([width, height]))
-            x3_actual = np.append(x3,np.array([actual_width, actual_height]))
-            final_indicies.append(x3_)
+            x3_actual = np.append(x0,np.array([actual_width, actual_height]))
             final_indicies_actual.append(x3_actual)
-        return np.array(final_indicies), np.array(final_indicies_actual)
+        return np.array(final_indicies_actual)
 
 def get_embeddings(words):
     bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -156,25 +152,35 @@ def mask_image_outside_bbox(image_path, bbox):
 
     # return masked_image_pil
     # Load the image
-    image = np.array(Image.open(image_path).convert('RGB'))
+    # image = np.array(Image.open(image_path).convert('RGB'))
 
     # Convert bbox coordinates to integers
-    x, y, width, height = map(int, bbox)
+    # x, y, width, height = map(int, bbox)
 
     # Create a mask where the area inside the bbox is white
-    mask = np.zeros_like(image)
-    mask[height-5:y+5, x-5:width+5] = 255
+    # mask = np.zeros_like(image)
+    # mask[height-5:y+5, x-5:width+5] = 255
 
-    # Apply the mask to the image
-    masked_image = cv2.bitwise_and(image, mask)
+    # # Apply the mask to the image
+    # masked_image = cv2.bitwise_and(image, mask)
 
-    masked_image_pil = Image.fromarray(masked_image)
+    # masked_image_pil = Image.fromarray(masked_image)
 
     # # Make the inside of the bbox white
     # masked_image[y:y+height , x:x+width] = 255
 
-    return masked_image_pil
-
+    image = Image.open(image_path).convert('RGB')
+    # Convert bbox coordinates to integers    
+    x, y, width, height = map(int, bbox)
+    
+    # Calculate the bottom right coordinates
+    x2 = x + width
+    y2 = y + height
+    
+    # Crop the image using the bounding box
+    cropped_image = image.crop((x, y, x2, y2))
+    
+    return cropped_image
 
 def get_clip_image_embeddings(image):
     """
@@ -442,6 +448,7 @@ class SynthTextDataset():
     def __init__(self, 
                 image_rootdir,
                 prob_use_caption=1,
+                which_layer_image="after_reproject",
                 image_size=512, 
                 min_box_size=0.01,
                 max_boxes_per_data=8,
@@ -452,6 +459,7 @@ class SynthTextDataset():
                 ):
         self.image_size = image_size
         self.image_rootdir = image_rootdir
+        self.which_layer_image = which_layer_image
         self.prob_use_caption = prob_use_caption
         self.min_box_size = min_box_size
         self.random_drop_embedding = random_drop_embedding
@@ -465,6 +473,7 @@ class SynthTextDataset():
         image_files = extract_image_file_paths(mat_contents, image_rootdir)
         self.image_files = image_files
         self.mat_contents = mat_contents
+        self.projection_matrix = torch.load('projection_matrix')
         # preprocessed CLIP feature embedding length: 768  
         self.embedding_len = 768
 
@@ -528,7 +537,7 @@ class SynthTextDataset():
 
         # -------------------- grounding token ------------------- # 
 
-        bboxs, bbox_actual = get_bb(self.mat_contents, index)
+        bbox_actual = get_bb(self.mat_contents, index)
         words = get_words(self.mat_contents, index)        
         embeddings = get_embeddings(words)
         captions = get_text_description(self.mat_contents, index)
@@ -564,8 +573,8 @@ class SynthTextDataset():
                 all_boxes.append( torch.tensor([x0,y0,x1,y1]) / self.image_size ) # scale to 0-1
                 all_masks.append(1)
                 all_text_embeddings.append(embeddings[i])
-                result_image = mask_image_outside_bbox(image, bboxs[i])
-                all_image_embeddings.append( get_clip_image_embeddings(result_image) )
+                result_image = mask_image_outside_bbox(image, bbox)
+                all_image_embeddings.append(self.mapping(get_clip_image_embeddings(result_image)) )
 
         # Sort according to area and choose the largest N objects   
         wanted_idxs = torch.tensor(areas).sort(descending=True)[1]
