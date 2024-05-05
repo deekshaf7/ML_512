@@ -101,6 +101,15 @@ class DatasetCatalog:
 
         # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - # 
 
+        self.SynthText = {   
+            "target": "dataset.dataset_synthtext.SynthTextDataset",
+            "train_params":dict(
+                image_rootdir=os.path.join(ROOT,'SynthText/'),
+            ),
+        }
+
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - # 
+
         self.COCO2017Keypoint = {   
             "target": "dataset.dataset_kp.KeypointDataset",
             "train_params":dict(
@@ -119,6 +128,15 @@ class DatasetCatalog:
                 image_rootdir = os.path.join(ROOT,'normal/image_train'),
                 normal_rootdir = os.path.join(ROOT,'normal/normal_train'),
                 caption_path = os.path.join(ROOT,'normal/diode_cation.json'),
+            ),
+        }
+
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - # 
+
+        self.CustomDatasetReplica = {   
+            "target": "dataset.dataset_normal.NormalDatasetV2",
+            "train_params":dict(
+                image_rootdir = os.path.join(ROOT,'Output/'),
             ),
         }
 
