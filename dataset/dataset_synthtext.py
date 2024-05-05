@@ -426,6 +426,8 @@ def project(x, projection_matrix):
     defined in CLIP (out_dim, in_dim), thus we need to apply transpose below.  
     this function will return the CLIP feature (without normalziation)
     """
+    device = projection_matrix.device  # Get the device of the projection matrix
+    x = x.to(device) 
     return x@torch.transpose(projection_matrix, 0, 1)
 
 
